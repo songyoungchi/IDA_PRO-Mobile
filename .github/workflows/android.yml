@@ -33,6 +33,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
+    - name: Fix incorrect activity-result dependency
+      run: |
+        # Replace the non-existent 'activity-result' artifact with the correct 'activity' artifact
+        sed -i 's/androidx\.activity:activity-result:/androidx.activity:activity:/g' app/build.gradle
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
