@@ -34,26 +34,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
-    - name: Debug - show all build files
-      run: |
-        echo "=== All build.gradle(.kts) files ==="
-        find . -name "build.gradle" -o -name "build.gradle.kts" | grep -v "/build/" | grep -v "/.gradle/"
-        echo ""
-        echo "=== Looking for app module file ==="
-        ls -la app/ 2>/dev/null || echo "(no app/ dir)"
-        echo ""
-        echo "=== app/build.gradle.kts content ==="
-        cat app/build.gradle.kts 2>/dev/null || echo "(not found)"
-        echo ""
-        echo "=== app/build.gradle content ==="
-        cat app/build.gradle 2>/dev/null || echo "(not found)"
-
     - name: Patch app module build file - force armeabi-v7a
       run: |
         python3 << 'PYEOF'
-        import re, glob, sys, os
+        import re, glob, sys
 
-        # Find the app module file specifically — the one with defaultConfig
         candidates = []
         for path in glob.glob('**/build.gradle', recursive=True) + \
                     glob.glob('**/build.gradle.kts', recursive=True):
@@ -64,7 +49,6 @@ jobs:
                     c = f.read()
             except Exception:
                 continue
-            # Only patch files that have a real defaultConfig block
             if re.search(r'defaultConfig\s*\{', c):
                 candidates.append(path)
 
@@ -72,84 +56,42 @@ jobs:
             print("❌ No build file with defaultConfig block found!")
             sys.exit(1)
 
-        # Prefer app/build.gradle.kts, then app/build.gradle, then first candidate
         preferred = ['app/build.gradle.kts', 'app/build.gradle']
-        target = None
-        for p in preferred:
-            if p in candidates:
-                target = p
-                break
-        if target is None:
-            target = candidates[0]
-
-        print(f"✅ Selected target: {target}")
-        print(f"   (all candidates: {candidates})")
+        target = next((p for p in preferred if p in candidates), candidates[0])
+        print(f"✅ Target: {target}")
 
         with open(target) as f:
             content = f.read()
 
         is_kts = target.endswith('.kts')
 
-        # 1) Fix activity-result -> activity
+        # Fix activity-result -> activity
         content = content.replace(
             'androidx.activity:activity-result',
             'androidx.activity:activity'
         )
 
-        # 2) Remove existing abiFilters / splits.abi blocks
-        content = re.sub(
-            r'ndk\s*\{[^{}]*abiFilters[^{}]*\}',
-            '', content, flags=re.DOTALL
-        )
-        content = re.sub(
-            r'splits\s*\{[^}]*abi\s*\{[^}]*\}',
-            '', content, flags=re.DOTALL
-        )
+        # Remove any existing ndk abiFilters / splits.abi blocks
+        content = re.sub(r'ndk\s*\{[^{}]*abiFilters[^{}]*\}', '', content, flags=re.DOTALL)
+        content = re.sub(r'splits\s*\{[^}]*abi\s*\{[^}]*\}', '', content, flags=re.DOTALL)
 
-        # 3) Inject abiFilters right after 'defaultConfig {'
-        if is_kts:
-            injection = '\n        ndk { abiFilters.add("armeabi-v7a") }'
-        else:
-            injection = '\n        ndk { abiFilters "armeabi-v7a" }'
-
-        new_content, n = re.subn(
-            r'(defaultConfig\s*\{)',
-            lambda m: m.group(1) + injection,
-            content,
-            count=1
-        )
+        # Inject our own armeabi-v7a-only filter right after defaultConfig {
+        injection = ('\n        ndk { abiFilters.add("armeabi-v7a") }'
+                     if is_kts else
+                     '\n        ndk { abiFilters "armeabi-v7a" }')
+        content, n = re.subn(r'(defaultConfig\s*\{)',
+                             lambda m: m.group(1) + injection,
+                             content, count=1)
         if n == 0:
-            print(f"❌ Could not inject abiFilters in {target}")
+            print(f"❌ defaultConfig not found in {target}")
             sys.exit(1)
 
         with open(target, 'w') as f:
-            f.write(new_content)
+            f.write(content)
 
-        print(f"\n=== Patched {target} (first 30 lines) ===")
-        for i, line in enumerate(new_content.splitlines()[:30], 1):
+        print(f"=== Patched {target} (first 25 lines) ===")
+        for i, line in enumerate(content.splitlines()[:25], 1):
             print(f"{i:3d}: {line}")
-
-        # Also patch any OTHER build files that have defaultConfig
-        for p in candidates:
-            if p == target:
-                continue
-            print(f"\n=== Also patching {p} ===")
-            with open(p) as f:
-                c = f.read()
-            p_is_kts = p.endswith('.kts')
-            c = c.replace('androidx.activity:activity-result',
-                          'androidx.activity:activity')
-            c = re.sub(r'ndk\s*\{[^{}]*abiFilters[^{}]*\}', '', c, flags=re.DOTALL)
-            c = re.sub(r'splits\s*\{[^}]*abi\s*\{[^}]*\}', '', c, flags=re.DOTALL)
-            inj = ('\n        ndk { abiFilters.add("armeabi-v7a") }'
-                   if p_is_kts else
-                   '\n        ndk { abiFilters "armeabi-v7a" }')
-            c, n2 = re.subn(r'(defaultConfig\s*\{)',
-                            lambda m: m.group(1) + inj, c, count=1)
-            if n2:
-                with open(p, 'w') as f:
-                    f.write(c)
-                print(f"✅ Patched {p}")
         PYEOF
 
     - name: Inject stub openssl/sha.h + SHA256 implementation
@@ -293,13 +235,18 @@ jobs:
           CMAKE_FILE=$(find app/src/main -name CMakeLists.txt | head -n1)
         fi
         echo "Patching CMake: $CMAKE_FILE"
+        echo "=== original CMakeLists.txt tail ==="
+        tail -n 20 "$CMAKE_FILE"
         cat >> "$CMAKE_FILE" << 'CMAKE_EOF'
 
         # === Injected by CI: OpenSSL/SHA stub ===
         add_library(sha256_stub STATIC sha256_stub.c)
         target_include_directories(sha256_stub PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-        target_link_libraries(binary_analyzer PUBLIC sha256_stub)
+        # NOTE: must use PLAIN signature to match line 30 of this file
+        target_link_libraries(binary_analyzer sha256_stub)
         CMAKE_EOF
+        echo "=== patched CMakeLists.txt tail ==="
+        tail -n 15 "$CMAKE_FILE"
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
@@ -311,8 +258,8 @@ jobs:
 
     - name: Build Debug APK (armeabi-v7a only)
       run: |
-        echo "=== abiFilters in app module ==="
-        grep -n "abiFilters" app/build.gradle.kts app/build.gradle 2>/dev/null || echo "(none)"
+        echo "=== abiFilters check ==="
+        grep -n "abiFilters" app/build.gradle.kts || echo "(none)"
         ./gradlew clean assembleDebug --stacktrace
 
     - name: Verify APK contains ONLY armeabi-v7a
@@ -320,15 +267,10 @@ jobs:
         APK=$(find . -name "app-debug.apk" -path "*/outputs/apk/*" | head -n 1)
         if [ -n "$APK" ] && [ -f "$APK" ]; then
           echo "APK: $APK"
-          echo "=== lib/ entries ==="
-          unzip -l "$APK" | grep "lib/" || echo "(no lib/ entries!)"
-          echo ""
-          if unzip -l "$APK" | grep -q "lib/armeabi-v7a/"; then
-            echo "✅ armeabi-v7a present"
-          else
-            echo "❌ armeabi-v7a MISSING"
-            exit 1
-          fi
+          unzip -l "$APK" | grep "lib/" || echo "(no lib/ entries)"
+          unzip -l "$APK" | grep -q "lib/armeabi-v7a/" \
+            && echo "✅ armeabi-v7a present" \
+            || { echo "❌ armeabi-v7a MISSING"; exit 1; }
           if unzip -l "$APK" | grep -q "lib/arm64-v8a/"; then
             echo "⚠️ arm64-v8a still present — patch failed!"
           fi
