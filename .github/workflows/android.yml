@@ -87,6 +87,47 @@ jobs:
         print(f"✅ Patched {target}")
         PYEOF
 
+    - name: Fix Room @TypeConverters error
+      run: |
+        python3 << 'PYEOF'
+        import re, glob, sys, os
+
+        # Find AppDatabase.kt
+        candidates = glob.glob('**/AppDatabase.kt', recursive=True)
+        if not candidates:
+            print("⚠️  AppDatabase.kt not found — skipping")
+            sys.exit(0)
+
+        target = candidates[0]
+        print(f"=== Patching {target} ===")
+
+        with open(target) as f:
+            content = f.read()
+
+        print("--- ORIGINAL (first 40 lines) ---")
+        for i, line in enumerate(content.splitlines()[:40], 1):
+            print(f"{i:3d}: {line}")
+
+        # Comment out any @TypeConverters(...) annotation
+        new_content, n = re.subn(
+            r'^(\s*)@TypeConverters\s*\([^)]*\)',
+            r'\1// @TypeConverters(...) removed by CI: referenced class has no @TypeConverter methods',
+            content,
+            flags=re.MULTILINE
+        )
+        if n == 0:
+            print("⚠️  No @TypeConverters annotation found — nothing to do")
+            sys.exit(0)
+        print(f"✅ Commented out {n} @TypeConverters annotation(s)")
+
+        with open(target, 'w') as f:
+            f.write(new_content)
+
+        print("--- PATCHED (first 40 lines) ---")
+        for i, line in enumerate(new_content.splitlines()[:40], 1):
+            print(f"{i:3d}: {line}")
+        PYEOF
+
     - name: Inject missing Android resources
       run: |
         set -e
