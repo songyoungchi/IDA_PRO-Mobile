@@ -91,9 +91,10 @@ jobs:
       run: |
         set -e
         RES=app/src/main/res
-        mkdir -p $RES/values $RES/xml $RES/mipmap-anydpi-v26 $RES/drawable
+        mkdir -p $RES/values $RES/xml $RES/drawable
+        mkdir -p $RES/mipmap-anydpi-v26
+        mkdir -p $RES/mipmap-mdpi $RES/mipmap-hdpi $RES/mipmap-xhdpi $RES/mipmap-xxhdpi $RES/mipmap-xxxhdpi
 
-        # --- strings.xml ---
         cat > $RES/values/strings.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <resources>
@@ -101,7 +102,6 @@ jobs:
         </resources>
         EOF
 
-        # --- themes.xml ---
         cat > $RES/values/themes.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <resources>
@@ -113,47 +113,25 @@ jobs:
         </resources>
         EOF
 
-        # --- backup_rules.xml ---
+        cat > $RES/values/colors.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <resources>
+            <color name="ic_launcher_background">#FF1E1E1E</color>
+        </resources>
+        EOF
+
         cat > $RES/xml/backup_rules.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <full-backup-content>
         </full-backup-content>
         EOF
 
-        # --- data_extraction_rules.xml ---
         cat > $RES/xml/data_extraction_rules.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <data-extraction-rules>
-            <cloud-backup>
-            </cloud-backup>
-            <device-transfer>
-            </device-transfer>
+            <cloud-backup></cloud-backup>
+            <device-transfer></device-transfer>
         </data-extraction-rules>
-        EOF
-
-        # --- Adaptive icons (XML only, no PNGs needed) ---
-        cat > $RES/mipmap-anydpi-v26/ic_launcher.xml << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-            <background android:drawable="@color/ic_launcher_background"/>
-            <foreground android:drawable="@drawable/ic_launcher_foreground"/>
-        </adaptive-icon>
-        EOF
-
-        cat > $RES/mipmap-anydpi-v26/ic_launcher_round.xml << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-            <background android:drawable="@color/ic_launcher_background"/>
-            <foreground android:drawable="@drawable/ic_launcher_foreground"/>
-        </adaptive-icon>
-        EOF
-
-        # --- Icon colors + foreground vector ---
-        cat > $RES/values/colors.xml << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <resources>
-            <color name="ic_launcher_background">#FF1E1E1E</color>
-        </resources>
         EOF
 
         cat > $RES/drawable/ic_launcher_foreground.xml << 'EOF'
@@ -163,22 +141,36 @@ jobs:
             android:height="108dp"
             android:viewportWidth="108"
             android:viewportHeight="108">
-            <path
-                android:fillColor="#FF4CAF50"
-                android:pathData="M30,30h48v48h-48z"/>
-            <path
-                android:fillColor="#FFFFFFFF"
+            <path android:fillColor="#FF4CAF50" android:pathData="M30,30h48v48h-48z"/>
+            <path android:fillColor="#FFFFFFFF"
                 android:pathData="M40,40h6v28h-6z M50,40h18v6h-12v22h-6z"/>
         </vector>
         EOF
 
-        # --- Fallback icons for pre-API 26 (use mipmap-anydpi, vector works as mipmap on modern AGP) ---
-        cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml $RES/drawable/ 2>/dev/null || true
-        # Some builds need mipmap-*dpi to exist for older APIs; provide vector fallbacks
+        cat > $RES/mipmap-anydpi-v26/ic_launcher.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@color/ic_launcher_background"/>
+            <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+        </adaptive-icon>
+        EOF
+        cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
+
         for d in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
-          mkdir -p $RES/$d
-          cp $RES/drawable/ic_launcher_foreground.xml $RES/$d/ic_launcher.xml
-          cp $RES/drawable/ic_launcher_foreground.xml $RES/$d/ic_launcher_round.xml
+          cat > $RES/$d/ic_launcher.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="48dp"
+            android:height="48dp"
+            android:viewportWidth="48"
+            android:viewportHeight="48">
+            <path android:fillColor="#FF1E1E1E" android:pathData="M0,0h48v48h-48z"/>
+            <path android:fillColor="#FF4CAF50" android:pathData="M12,12h24v24h-24z"/>
+            <path android:fillColor="#FFFFFFFF"
+                android:pathData="M18,18h3v12h-3z M24,18h8v3h-5v9h-3z"/>
+        </vector>
+        EOF
+          cp $RES/$d/ic_launcher.xml $RES/$d/ic_launcher_round.xml
         done
 
         echo "=== Created resources ==="
