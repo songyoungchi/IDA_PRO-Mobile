@@ -34,23 +34,10 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
-    - name: Debug - show build.gradle before patch
-      run: |
-        echo "=== build.gradle files found ==="
-        find . -name "build.gradle" -o -name "build.gradle.kts" | grep -v "/build/" | grep -v "/.gradle/"
-        echo ""
-        echo "=== app module build.gradle content ==="
-        for f in $(find . -name "build.gradle" -o -name "build.gradle.kts" | grep -v "/build/" | grep -v "/.gradle/"); do
-          if grep -q "com.android.application" "$f" 2>/dev/null; then
-            echo "--- $f ---"
-            cat "$f"
-          fi
-        done
-
-    - name: Patch build.gradle - force armeabi-v7a + fix activity-result
+    - name: Patch build.gradle(.kts) - force armeabi-v7a
       run: |
         python3 << 'PYEOF'
-        import re, glob, os, sys
+        import re, glob, sys, os
 
         targets = []
         for path in glob.glob('**/build.gradle', recursive=True) + \
@@ -58,20 +45,23 @@ jobs:
             if '/build/' in path or '/.gradle/' in path or '/.cxx/' in path:
                 continue
             try:
-                with open(path, 'r') as f:
-                    content = f.read()
+                with open(path) as f:
+                    c = f.read()
             except Exception:
                 continue
-            if 'com.android.application' in content:
+            if 'com.android.application' in c:
                 targets.append(path)
 
         if not targets:
-            print("❌ No app module build.gradle found!")
+            print("❌ No app build file with com.android.application found")
             sys.exit(1)
 
         for path in targets:
-            with open(path, 'r') as f:
+            print(f"\n=== Patching {path} ===")
+            with open(path) as f:
                 content = f.read()
+
+            is_kts = path.endswith('.kts')
 
             # 1) Fix activity-result -> activity
             content = content.replace(
@@ -79,45 +69,39 @@ jobs:
                 'androidx.activity:activity'
             )
 
-            # 2) Remove existing ndk { abiFilters ... } blocks (all)
+            # 2) Remove existing abiFilters / splits.abi blocks
             content = re.sub(
                 r'ndk\s*\{[^{}]*abiFilters[^{}]*\}',
-                '',
-                content,
-                flags=re.DOTALL
+                '', content, flags=re.DOTALL
             )
-
-            # 3) Disable ABI splits if present
             content = re.sub(
                 r'splits\s*\{[^}]*abi\s*\{[^}]*\}',
-                '',
-                content,
-                flags=re.DOTALL
+                '', content, flags=re.DOTALL
             )
 
-            # 4) Inject abiFilters right after 'defaultConfig {'
-            def inject(m):
-                return m.group(0) + '\n        ndk { abiFilters "armeabi-v7a" }'
+            # 3) Inject abiFilters after 'defaultConfig {'
+            #    Kotlin DSL vs Groovy DSL use different syntax
+            if is_kts:
+                injection = '\n        ndk { abiFilters.add("armeabi-v7a") }'
+            else:
+                injection = '\n        ndk { abiFilters "armeabi-v7a" }'
 
-            content, n = re.subn(
-                r'defaultConfig\s*\{',
-                inject,
+            new_content, n = re.subn(
+                r'(defaultConfig\s*\{)',
+                lambda m: m.group(1) + injection,
                 content,
                 count=1
             )
             if n == 0:
-                print(f"⚠️  Could not find defaultConfig in {path}, skipping ABI injection")
-            else:
-                print(f"✅ Injected abiFilters in {path}")
+                print(f"⚠️  'defaultConfig {{' not found in {path}")
+                sys.exit(1)
 
             with open(path, 'w') as f:
-                f.write(content)
+                f.write(new_content)
 
-        print("\n=== Final app build.gradle ===")
-        for path in targets:
-            with open(path) as f:
-                print(f"--- {path} ---")
-                print(f.read())
+            print(f"✅ Injected. First 25 lines:")
+            for i, line in enumerate(new_content.splitlines()[:25], 1):
+                print(f"{i:3d}: {line}")
         PYEOF
 
     - name: Inject stub openssl/sha.h + SHA256 implementation
@@ -279,8 +263,8 @@ jobs:
 
     - name: Build Debug APK (armeabi-v7a only)
       run: |
-        echo "=== Verifying patched build.gradle ==="
-        grep -n "abiFilters" app/build.gradle || echo "(not found in app/build.gradle)"
+        echo "=== abiFilters in patched build file ==="
+        grep -rn "abiFilters" app/build.gradle.kts app/build.gradle 2>/dev/null || echo "(none found!)"
         ./gradlew clean assembleDebug --stacktrace
 
     - name: Verify APK contains ONLY armeabi-v7a
@@ -291,7 +275,6 @@ jobs:
           echo "=== lib/ entries ==="
           unzip -l "$APK" | grep "lib/" || echo "(no lib/ entries!)"
           echo ""
-          echo "=== ABI summary ==="
           if unzip -l "$APK" | grep -q "lib/armeabi-v7a/"; then
             echo "✅ armeabi-v7a present"
           else
@@ -299,7 +282,7 @@ jobs:
             exit 1
           fi
           if unzip -l "$APK" | grep -q "lib/arm64-v8a/"; then
-            echo "⚠️ arm64-v8a is still present — patch failed!"
+            echo "⚠️ arm64-v8a still present — patch failed!"
           fi
         else
           echo "❌ APK not found!"
