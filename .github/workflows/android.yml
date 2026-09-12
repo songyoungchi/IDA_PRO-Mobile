@@ -34,7 +34,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
-    - name: Patch app module build file - force armeabi-v7a + Compose + icons
+    - name: Patch app module build file
       run: |
         python3 << 'PYEOF'
         import re, glob, sys
@@ -65,25 +65,25 @@ jobs:
 
         is_kts = target.endswith('.kts')
 
-        # 1) Fix activity-result -> activity
+        # 1) activity-result -> activity
         content = content.replace(
             'androidx.activity:activity-result',
             'androidx.activity:activity'
         )
 
-        # 2) Force Compose Compiler = 1.5.1 (Kotlin 1.9.0 compatible)
+        # 2) Force Compose Compiler = 1.5.1
         content, n_cc = re.subn(
             r'kotlinCompilerExtensionVersion\s*=\s*"[^"]*"',
             'kotlinCompilerExtensionVersion = "1.5.1"',
             content
         )
-        print(f"✅ Compose Compiler -> 1.5.1 ({n_cc} replacement)")
+        print(f"✅ Compose Compiler -> 1.5.1 ({n_cc})")
 
-        # 3) Remove existing ndk abiFilters / splits.abi blocks
+        # 3) Remove existing abiFilters / splits.abi blocks
         content = re.sub(r'ndk\s*\{[^{}]*abiFilters[^{}]*\}', '', content, flags=re.DOTALL)
         content = re.sub(r'splits\s*\{[^}]*abi\s*\{[^}]*\}', '', content, flags=re.DOTALL)
 
-        # 4) Inject armeabi-v7a filter right after defaultConfig {
+        # 4) Inject armeabi-v7a filter
         injection = ('\n        ndk { abiFilters.add("armeabi-v7a") }'
                      if is_kts else
                      '\n        ndk { abiFilters "armeabi-v7a" }')
@@ -94,60 +94,64 @@ jobs:
             print(f"❌ defaultConfig not found in {target}")
             sys.exit(1)
 
-        # 5) Add material-icons-extended dependency (once)
-        if 'material-icons-extended' not in content:
-            # Try KTS style first, then Groovy
-            for pattern in [
-                r'(implementation\(platform\("androidx\.compose:compose-bom:[^"]*"\)\))',
-                r'(implementation\("androidx\.compose\.material3:material3"\))',
-                r'(implementation\s+"androidx\.compose\.material3:material3")',
-                r'(dependencies\s*\{)'
-            ]:
-                m = re.search(pattern, content)
+        # 5) Add missing dependencies (idempotent)
+        def add_dep(content, marker, dep_line, is_kts):
+            if marker in content:
+                print(f"⏭️  {marker} already present")
+                return content
+            patterns = [
+                r'implementation\(platform\("androidx\.compose:compose-bom:[^"]*"\)\)',
+                r'implementation\("androidx\.compose\.material3:material3"\)',
+                r'implementation\("androidx\.compose\.material:material-icons-extended"\)',
+                r'implementation\s+"androidx\.compose\.material3:material3"',
+                r'dependencies\s*\{'
+            ]
+            for pat in patterns:
+                m = re.search(pat, content)
                 if m:
-                    if is_kts:
-                        dep = '\n    implementation("androidx.compose.material:material-icons-extended")'
-                    else:
-                        dep = '\n    implementation "androidx.compose.material:material-icons-extended"'
-                    content = content[:m.end()] + dep + content[m.end():]
-                    print(f"✅ Added material-icons-extended after: {m.group(1)[:60]}...")
-                    break
-            else:
-                print("⚠️  Could not add material-icons-extended (no dependencies block found)")
+                    content = content[:m.end()] + ('\n    ' + dep_line if is_kts
+                                                   else '\n    ' + dep_line) + content[m.end():]
+                    print(f"✅ Added {marker}")
+                    return content
+            print(f"⚠️  Could not add {marker}")
+            return content
 
-        # 6) Add Compose experimental API opt-ins to kotlinOptions
-        if 'ExperimentalMaterial3Api' not in content:
-            optin_flags = (
-                'freeCompilerArgs += listOf(\n'
-                '            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",\n'
-                '            "-opt-in=androidx.compose.material.ExperimentalMaterialApi",\n'
-                '            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"\n'
-                '        )'
-            )
-            # Find kotlinOptions block and inject
-            m = re.search(r'kotlinOptions\s*\{', content)
+        content = add_dep(content,
+                          'material-icons-extended',
+                          'implementation("androidx.compose.material:material-icons-extended")',
+                          is_kts)
+        content = add_dep(content,
+                          'lifecycle-runtime-compose',
+                          'implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")',
+                          is_kts)
+
+        # 6) Compose opt-in flags — remove any existing, then inject clean set
+        content = re.sub(
+            r'freeCompilerArgs\s*\+=\s*listOf\([^)]*\)',
+            '', content, flags=re.DOTALL
+        )
+        optin_flags = (
+            'freeCompilerArgs += listOf(\n'
+            '            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",\n'
+            '            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"\n'
+            '        )'
+        )
+        if 'kotlinOptions {' in content:
+            content = re.sub(r'kotlinOptions\s*\{',
+                             'kotlinOptions {\n        ' + optin_flags,
+                             content, count=1)
+            print("✅ Injected opt-in flags into existing kotlinOptions block")
+        else:
+            m = re.search(r'(composeOptions\s*\{[^}]*\})', content, re.DOTALL)
             if m:
-                content = content[:m.end()] + '\n        ' + optin_flags + content[m.end():]
-                print("✅ Added Compose experimental API opt-ins")
-            else:
-                # No kotlinOptions block — add one after buildFeatures or composeOptions
-                m = re.search(r'(composeOptions\s*\{[^}]*\})', content, re.DOTALL)
-                if m:
-                    kts_block = '\n\n    kotlinOptions {\n        jvmTarget = "1.8"\n        ' + optin_flags + '\n    }'
-                    content = content[:m.end()] + kts_block + content[m.end():]
-                    print("✅ Added kotlinOptions block with opt-ins")
-                else:
-                    print("⚠️  Could not add compiler opt-ins")
+                content = content[:m.end()] + \
+                          '\n\n    kotlinOptions {\n        jvmTarget = "1.8"\n        ' + \
+                          optin_flags + '\n    }' + content[m.end():]
+                print("✅ Created kotlinOptions block with opt-in flags")
 
         with open(target, 'w') as f:
             f.write(content)
         print(f"\n✅ Patched {target}")
-        print("=== Final relevant lines ===")
-        for i, line in enumerate(content.splitlines(), 1):
-            if ('abiFilters' in line or 'kotlinCompilerExtensionVersion' in line
-                    or 'material-icons-extended' in line or 'opt-in' in line
-                    or 'activity:' in line or 'kotlinOptions' in line):
-                print(f"{i:3d}: {line}")
         PYEOF
 
     - name: Fix Room @TypeConverters error
@@ -161,8 +165,6 @@ jobs:
             sys.exit(0)
 
         target = candidates[0]
-        print(f"=== Patching {target} ===")
-
         with open(target) as f:
             content = f.read()
 
@@ -173,7 +175,7 @@ jobs:
             flags=re.MULTILINE
         )
         if n == 0:
-            print("⚠️  No @TypeConverters annotation found — nothing to do")
+            print("⏭️  No @TypeConverters annotation found")
             sys.exit(0)
         print(f"✅ Commented out {n} @TypeConverters annotation(s)")
 
@@ -181,15 +183,41 @@ jobs:
             f.write(new_content)
         PYEOF
 
-    - name: Debug - show HexViewScreen.kt
+    - name: Fix HexViewScreen.kt source bugs
       run: |
-        F=$(find . -name "HexViewScreen.kt" -not -path "*/build/*" | head -n1)
-        if [ -n "$F" ]; then
-          echo "=== $F (full) ==="
-          cat -n "$F"
-        else
-          echo "HexViewScreen.kt not found"
-        fi
+        python3 << 'PYEOF'
+        import re, glob, sys
+
+        candidates = glob.glob('**/HexViewScreen.kt', recursive=True)
+        if not candidates:
+            print("⚠️  HexViewScreen.kt not found — skipping")
+            sys.exit(0)
+
+        target = candidates[0]
+        print(f"=== Patching {target} ===")
+        with open(target) as f:
+            content = f.read()
+
+        # Fix 1: horizontalAlignment expects Alignment.Horizontal, not Vertical
+        before1 = content
+        content = content.replace(
+            'Column(horizontalAlignment = Alignment.CenterVertically)',
+            'Column(horizontalAlignment = Alignment.CenterHorizontally)'
+        )
+        print("✅ Fix 1 applied" if content != before1 else "⏭️  Fix 1 already applied")
+
+        # Fix 2: ByteArray has no .chunked() extension
+        before2 = content
+        content = re.sub(
+            r'val rows = hexData\.chunked\(bytesPerRow\)',
+            'val rows = hexData.toList().chunked(bytesPerRow)',
+            content
+        )
+        print("✅ Fix 2 applied" if content != before2 else "⏭️  Fix 2 already applied")
+
+        with open(target, 'w') as f:
+            f.write(content)
+        PYEOF
 
     - name: Inject missing Android resources
       run: |
@@ -440,19 +468,19 @@ jobs:
 
     - name: Build Debug APK (armeabi-v7a only)
       run: |
-        echo "=== abiFilters check ==="
+        echo "=== abiFilters ==="
         grep -n "abiFilters" app/build.gradle.kts || echo "(none)"
-        echo "=== Compose Compiler version ==="
+        echo "=== Compose Compiler ==="
         grep -n "kotlinCompilerExtensionVersion" app/build.gradle.kts || echo "(none)"
-        echo "=== material-icons-extended check ==="
-        grep -n "material-icons-extended" app/build.gradle.kts || echo "(none)"
-        echo "=== opt-in flags check ==="
+        echo "=== deps check ==="
+        grep -nE "material-icons-extended|lifecycle-runtime-compose" app/build.gradle.kts || echo "(none)"
+        echo "=== opt-in flags ==="
         grep -n "opt-in" app/build.gradle.kts || echo "(none)"
         ./gradlew clean assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log || true
         echo ""
-        echo "=== Final failure summary (last 100 lines) ==="
-        tail -n 100 /tmp/gradle-build.log
-        # Fail the step if Gradle actually failed
+        echo "=== Kotlin compile errors (if any) ==="
+        grep -E "^e: file:" /tmp/gradle-build.log | head -n 50 || true
+        echo ""
         if grep -q "BUILD FAILED" /tmp/gradle-build.log; then
           exit 1
         fi
@@ -468,7 +496,7 @@ jobs:
             && echo "✅ armeabi-v7a present" \
             || { echo "❌ armeabi-v7a MISSING"; exit 1; }
           if unzip -l "$APK" | grep -q "lib/arm64-v8a/"; then
-            echo "⚠️ arm64-v8a still present — patch failed!"
+            echo "⚠️ arm64-v8a still present!"
           fi
         else
           echo "❌ APK not found!"
