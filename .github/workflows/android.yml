@@ -5,6 +5,7 @@ on:
     branches: [ "main", "develop" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -33,10 +34,24 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
+    - name: Debug - list repository layout
+      run: |
+        echo "=== Repository root ==="
+        ls -la
+        echo "=== All build.gradle files ==="
+        find . -maxdepth 4 -name "build.gradle*" -not -path "*/build/*" -not -path "*/.gradle/*"
+
     - name: Fix incorrect activity-result dependency
       run: |
-        # Replace the non-existent 'activity-result' artifact with the correct 'activity' artifact
-        sed -i 's/androidx\.activity:activity-result:/androidx.activity:activity:/g' app/build.gradle
+        echo "=== Patching any file that references activity-result ==="
+        find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+          -not -path "*/build/*" -not -path "*/.gradle/*" \
+          -exec sed -i -E 's/androidx\.activity:activity-result/androidx.activity:activity/g' {} +
+
+        echo "=== Verification ==="
+        grep -rn "activity-result" . --include="build.gradle" --include="build.gradle.kts" \
+          && echo "⚠️ Still found references above" \
+          || echo "No more references to activity-result ✅"
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
@@ -66,21 +81,28 @@ jobs:
         EOF
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: Verify APK contains armeabi-v7a libs
       run: |
-        APK=app/build/outputs/apk/debug/app-debug.apk
-        if [ -f "$APK" ]; then
-          echo "APK found. Checking ABIs..."
-          unzip -l "$APK" | grep "lib/armeabi-v7a/" || echo "⚠️ No armeabi-v7a libs found! App may not run on your device."
+        APK=$(find . -name "app-debug.apk" -path "*/outputs/apk/*" | head -n 1)
+        if [ -n "$APK" ] && [ -f "$APK" ]; then
+          echo "APK found at: $APK"
+          echo "=== ABI contents ==="
+          unzip -l "$APK" | grep "lib/" || echo "⚠️ No native libraries found in APK"
+          unzip -l "$APK" | grep "lib/armeabi-v7a/" \
+            && echo "✅ armeabi-v7a libs present" \
+            || echo "⚠️ No armeabi-v7a libs found! App may not run on your device."
         else
           echo "❌ APK not found!"
           exit 1
         fi
 
     - name: Upload Debug APK
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ida-pro-mobile-armv7-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        path: |
+          **/build/outputs/apk/debug/*.apk
+        if-no-files-found: error
