@@ -65,13 +65,11 @@ jobs:
 
         is_kts = target.endswith('.kts')
 
-        # 1) activity-result -> activity
         content = content.replace(
             'androidx.activity:activity-result',
             'androidx.activity:activity'
         )
 
-        # 2) Force Compose Compiler = 1.5.1
         content, n_cc = re.subn(
             r'kotlinCompilerExtensionVersion\s*=\s*"[^"]*"',
             'kotlinCompilerExtensionVersion = "1.5.1"',
@@ -79,11 +77,9 @@ jobs:
         )
         print(f"✅ Compose Compiler -> 1.5.1 ({n_cc})")
 
-        # 3) Remove existing abiFilters / splits.abi blocks
         content = re.sub(r'ndk\s*\{[^{}]*abiFilters[^{}]*\}', '', content, flags=re.DOTALL)
         content = re.sub(r'splits\s*\{[^}]*abi\s*\{[^}]*\}', '', content, flags=re.DOTALL)
 
-        # 4) Inject armeabi-v7a filter
         injection = ('\n        ndk { abiFilters.add("armeabi-v7a") }'
                      if is_kts else
                      '\n        ndk { abiFilters "armeabi-v7a" }')
@@ -94,7 +90,6 @@ jobs:
             print(f"❌ defaultConfig not found in {target}")
             sys.exit(1)
 
-        # 5) Add missing dependencies (idempotent)
         def add_dep(content, marker, dep_line, is_kts):
             if marker in content:
                 print(f"⏭️  {marker} already present")
@@ -103,14 +98,14 @@ jobs:
                 r'implementation\(platform\("androidx\.compose:compose-bom:[^"]*"\)\)',
                 r'implementation\("androidx\.compose\.material3:material3"\)',
                 r'implementation\("androidx\.compose\.material:material-icons-extended"\)',
+                r'implementation\("androidx\.lifecycle:lifecycle-runtime-compose:[^"]*"\)',
                 r'implementation\s+"androidx\.compose\.material3:material3"',
                 r'dependencies\s*\{'
             ]
             for pat in patterns:
                 m = re.search(pat, content)
                 if m:
-                    content = content[:m.end()] + ('\n    ' + dep_line if is_kts
-                                                   else '\n    ' + dep_line) + content[m.end():]
+                    content = content[:m.end()] + '\n    ' + dep_line + content[m.end():]
                     print(f"✅ Added {marker}")
                     return content
             print(f"⚠️  Could not add {marker}")
@@ -121,11 +116,10 @@ jobs:
                           'implementation("androidx.compose.material:material-icons-extended")',
                           is_kts)
         content = add_dep(content,
-                          'lifecycle-runtime-compose',
-                          'implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")',
+                          'compose-runtime',
+                          'implementation("androidx.compose.runtime:runtime")',
                           is_kts)
 
-        # 6) Compose opt-in flags — remove any existing, then inject clean set
         content = re.sub(
             r'freeCompilerArgs\s*\+=\s*listOf\([^)]*\)',
             '', content, flags=re.DOTALL
@@ -140,14 +134,14 @@ jobs:
             content = re.sub(r'kotlinOptions\s*\{',
                              'kotlinOptions {\n        ' + optin_flags,
                              content, count=1)
-            print("✅ Injected opt-in flags into existing kotlinOptions block")
+            print("✅ Injected opt-in flags")
         else:
             m = re.search(r'(composeOptions\s*\{[^}]*\})', content, re.DOTALL)
             if m:
                 content = content[:m.end()] + \
                           '\n\n    kotlinOptions {\n        jvmTarget = "1.8"\n        ' + \
                           optin_flags + '\n    }' + content[m.end():]
-                print("✅ Created kotlinOptions block with opt-in flags")
+                print("✅ Created kotlinOptions block")
 
         with open(target, 'w') as f:
             f.write(content)
@@ -158,65 +152,75 @@ jobs:
       run: |
         python3 << 'PYEOF'
         import re, glob, sys
-
         candidates = glob.glob('**/AppDatabase.kt', recursive=True)
         if not candidates:
-            print("⚠️  AppDatabase.kt not found — skipping")
-            sys.exit(0)
-
+            print("⚠️  AppDatabase.kt not found — skipping"); sys.exit(0)
         target = candidates[0]
         with open(target) as f:
             content = f.read()
-
         new_content, n = re.subn(
             r'^(\s*)@TypeConverters\s*\([^)]*\)',
-            r'\1// @TypeConverters(...) removed by CI: referenced class has no @TypeConverter methods',
-            content,
-            flags=re.MULTILINE
-        )
+            r'\1// @TypeConverters(...) removed by CI: no @TypeConverter methods',
+            content, flags=re.MULTILINE)
         if n == 0:
-            print("⏭️  No @TypeConverters annotation found")
-            sys.exit(0)
-        print(f"✅ Commented out {n} @TypeConverters annotation(s)")
-
+            print("⏭️  No @TypeConverters annotation"); sys.exit(0)
         with open(target, 'w') as f:
             f.write(new_content)
+        print(f"✅ Commented out {n} @TypeConverters annotation(s)")
         PYEOF
 
     - name: Fix HexViewScreen.kt source bugs
       run: |
         python3 << 'PYEOF'
         import re, glob, sys
-
         candidates = glob.glob('**/HexViewScreen.kt', recursive=True)
         if not candidates:
-            print("⚠️  HexViewScreen.kt not found — skipping")
-            sys.exit(0)
-
+            print("⚠️  HexViewScreen.kt not found"); sys.exit(0)
         target = candidates[0]
-        print(f"=== Patching {target} ===")
         with open(target) as f:
             content = f.read()
 
-        # Fix 1: horizontalAlignment expects Alignment.Horizontal, not Vertical
-        before1 = content
+        before = content
         content = content.replace(
             'Column(horizontalAlignment = Alignment.CenterVertically)',
-            'Column(horizontalAlignment = Alignment.CenterHorizontally)'
-        )
-        print("✅ Fix 1 applied" if content != before1 else "⏭️  Fix 1 already applied")
+            'Column(horizontalAlignment = Alignment.CenterHorizontally)')
+        print("✅ Fix 1 (Alignment)" if content != before else "⏭️  Fix 1 already done")
 
-        # Fix 2: ByteArray has no .chunked() extension
-        before2 = content
+        before = content
         content = re.sub(
             r'val rows = hexData\.chunked\(bytesPerRow\)',
             'val rows = hexData.toList().chunked(bytesPerRow)',
-            content
-        )
-        print("✅ Fix 2 applied" if content != before2 else "⏭️  Fix 2 already applied")
+            content)
+        print("✅ Fix 2 (chunked)" if content != before else "⏭️  Fix 2 already done")
 
         with open(target, 'w') as f:
             f.write(content)
+        PYEOF
+
+    - name: Fix collectAsState import (compose-runtime)
+      run: |
+        python3 << 'PYEOF'
+        import re, glob, sys
+        targets = []
+        for pattern in ['**/ui/**/*.kt', '**/*Screen.kt']:
+            targets.extend(glob.glob(pattern, recursive=True))
+        targets = sorted(set(targets))
+        patched = 0
+        for path in targets:
+            with open(path) as f:
+                content = f.read()
+            new_content = re.sub(
+                r'import androidx\.lifecycle\.compose\.collectAsState\b',
+                'import androidx.compose.runtime.collectAsState',
+                content
+            )
+            if new_content != content:
+                with open(path, 'w') as f:
+                    f.write(new_content)
+                print(f"✅ Fixed import in {path}")
+                patched += 1
+        if patched == 0:
+            print("⏭️  No files needed the import fix")
         PYEOF
 
     - name: Inject missing Android resources
@@ -229,9 +233,7 @@ jobs:
 
         cat > $RES/values/strings.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
-        <resources>
-            <string name="app_name">IDA Pro Mobile</string>
-        </resources>
+        <resources><string name="app_name">IDA Pro Mobile</string></resources>
         EOF
 
         cat > $RES/values/themes.xml << 'EOF'
@@ -247,15 +249,12 @@ jobs:
 
         cat > $RES/values/colors.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
-        <resources>
-            <color name="ic_launcher_background">#FF1E1E1E</color>
-        </resources>
+        <resources><color name="ic_launcher_background">#FF1E1E1E</color></resources>
         EOF
 
         cat > $RES/xml/backup_rules.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
-        <full-backup-content>
-        </full-backup-content>
+        <full-backup-content></full-backup-content>
         EOF
 
         cat > $RES/xml/data_extraction_rules.xml << 'EOF'
@@ -269,10 +268,8 @@ jobs:
         cat > $RES/drawable/ic_launcher_foreground.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <vector xmlns:android="http://schemas.android.com/apk/res/android"
-            android:width="108dp"
-            android:height="108dp"
-            android:viewportWidth="108"
-            android:viewportHeight="108">
+            android:width="108dp" android:height="108dp"
+            android:viewportWidth="108" android:viewportHeight="108">
             <path android:fillColor="#FF4CAF50" android:pathData="M30,30h48v48h-48z"/>
             <path android:fillColor="#FFFFFFFF"
                 android:pathData="M40,40h6v28h-6z M50,40h18v6h-12v22h-6z"/>
@@ -292,10 +289,8 @@ jobs:
           cat > $RES/$d/ic_launcher.xml << 'EOF'
         <?xml version="1.0" encoding="utf-8"?>
         <vector xmlns:android="http://schemas.android.com/apk/res/android"
-            android:width="48dp"
-            android:height="48dp"
-            android:viewportWidth="48"
-            android:viewportHeight="48">
+            android:width="48dp" android:height="48dp"
+            android:viewportWidth="48" android:viewportHeight="48">
             <path android:fillColor="#FF1E1E1E" android:pathData="M0,0h48v48h-48z"/>
             <path android:fillColor="#FF4CAF50" android:pathData="M12,12h24v24h-24z"/>
             <path android:fillColor="#FFFFFFFF"
@@ -304,9 +299,7 @@ jobs:
         EOF
           cp $RES/$d/ic_launcher.xml $RES/$d/ic_launcher_round.xml
         done
-
-        echo "=== Created resources ==="
-        find $RES -type f | sort
+        echo "=== Resources created ==="
 
     - name: Inject stub openssl/sha.h + SHA256 implementation
       run: |
@@ -318,24 +311,15 @@ jobs:
         #define OPENSSL_SHA_H
         #include <stdint.h>
         #include <stddef.h>
-
         #define SHA256_DIGEST_LENGTH 32
-
         #ifdef __cplusplus
         extern "C" {
         #endif
-
-        typedef struct {
-            uint32_t state[8];
-            uint64_t count;
-            uint8_t  buf[64];
-        } SHA256_CTX;
-
+        typedef struct { uint32_t state[8]; uint64_t count; uint8_t buf[64]; } SHA256_CTX;
         int SHA256_Init(SHA256_CTX *c);
         int SHA256_Update(SHA256_CTX *c, const void *data, size_t len);
         int SHA256_Final(unsigned char *md, SHA256_CTX *c);
         unsigned char *SHA256(const unsigned char *d, size_t n, unsigned char *md);
-
         #ifdef __cplusplus
         }
         #endif
@@ -345,7 +329,6 @@ jobs:
         cat > app/src/main/cpp/sha256_stub.c << 'IMPL_EOF'
         #include "openssl/sha.h"
         #include <string.h>
-
         static const uint32_t K[64] = {
             0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
             0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -356,105 +339,29 @@ jobs:
             0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
             0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
         };
-
         #define ROTR(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
-
-        static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
-            uint32_t w[64], a,b,c,d,e,f,g,h,t1,t2;
-            int i;
-            for (i = 0; i < 16; i++) {
-                w[i] = ((uint32_t)block[i*4]   << 24) |
-                       ((uint32_t)block[i*4+1] << 16) |
-                       ((uint32_t)block[i*4+2] <<  8) |
-                       ((uint32_t)block[i*4+3]);
-            }
-            for (i = 16; i < 64; i++) {
-                uint32_t s0 = ROTR(w[i-15],7) ^ ROTR(w[i-15],18) ^ (w[i-15] >> 3);
-                uint32_t s1 = ROTR(w[i-2],17) ^ ROTR(w[i-2],19) ^ (w[i-2] >> 10);
-                w[i] = w[i-16] + s0 + w[i-7] + s1;
-            }
-            a=state[0]; b=state[1]; c=state[2]; d=state[3];
-            e=state[4]; f=state[5]; g=state[6]; h=state[7];
-            for (i = 0; i < 64; i++) {
-                uint32_t S1 = ROTR(e,6) ^ ROTR(e,11) ^ ROTR(e,25);
-                uint32_t ch = (e & f) ^ ((~e) & g);
-                t1 = h + S1 + ch + K[i] + w[i];
-                uint32_t S0 = ROTR(a,2) ^ ROTR(a,13) ^ ROTR(a,22);
-                uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-                t2 = S0 + maj;
-                h=g; g=f; f=e; e=d+t1;
-                d=c; c=b; b=a; a=t1+t2;
-            }
-            state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d;
-            state[4]+=e; state[5]+=f; state[6]+=g; state[7]+=h;
+        static void sha256_transform(uint32_t s[8], const uint8_t b[64]) {
+            uint32_t w[64], a=s[0],bb=s[1],c=s[2],d=s[3],e=s[4],f=s[5],g=s[6],h=s[7],t1,t2; int i;
+            for (i=0;i<16;i++) w[i]=((uint32_t)b[i*4]<<24)|((uint32_t)b[i*4+1]<<16)|((uint32_t)b[i*4+2]<<8)|b[i*4+3];
+            for (i=16;i<64;i++){uint32_t s0=ROTR(w[i-15],7)^ROTR(w[i-15],18)^(w[i-15]>>3);uint32_t s1=ROTR(w[i-2],17)^ROTR(w[i-2],19)^(w[i-2]>>10);w[i]=w[i-16]+s0+w[i-7]+s1;}
+            for (i=0;i<64;i++){uint32_t S1=ROTR(e,6)^ROTR(e,11)^ROTR(e,25);uint32_t ch=(e&f)^((~e)&g);t1=h+S1+ch+K[i]+w[i];uint32_t S0=ROTR(a,2)^ROTR(a,13)^ROTR(a,22);uint32_t maj=(a&bb)^(a&c)^(bb&c);t2=S0+maj;h=g;g=f;f=e;e=d+t1;d=c;c=bb;bb=a;a=t1+t2;}
+            s[0]+=a;s[1]+=bb;s[2]+=c;s[3]+=d;s[4]+=e;s[5]+=f;s[6]+=g;s[7]+=h;
         }
-
-        int SHA256_Init(SHA256_CTX *c) {
-            c->state[0]=0x6a09e667; c->state[1]=0xbb67ae85;
-            c->state[2]=0x3c6ef372; c->state[3]=0xa54ff53a;
-            c->state[4]=0x510e527f; c->state[5]=0x9b05688c;
-            c->state[6]=0x1f83d9ab; c->state[7]=0x5be0cd19;
-            c->count=0;
-            return 1;
-        }
-
-        int SHA256_Update(SHA256_CTX *c, const void *data, size_t len) {
-            const uint8_t *p = (const uint8_t*)data;
-            size_t idx = (size_t)(c->count & 63);
-            c->count += len;
-            while (len > 0) {
-                size_t n = 64 - idx;
-                if (n > len) n = len;
-                memcpy(c->buf + idx, p, n);
-                idx += n; p += n; len -= n;
-                if (idx == 64) { sha256_transform(c->state, c->buf); idx = 0; }
-            }
-            return 1;
-        }
-
-        int SHA256_Final(unsigned char *md, SHA256_CTX *c) {
-            uint64_t bits = c->count * 8;
-            size_t idx = (size_t)(c->count & 63);
-            uint8_t pad[72];
-            size_t padlen;
-            pad[0] = 0x80;
-            padlen = (idx < 56) ? (56 - idx) : (120 - idx);
-            memset(pad + 1, 0, padlen - 1);
-            SHA256_Update(c, pad, padlen);
-            uint8_t lenbuf[8];
-            for (int i = 0; i < 8; i++) lenbuf[i] = (uint8_t)(bits >> (56 - 8*i));
-            SHA256_Update(c, lenbuf, 8);
-            for (int i = 0; i < 8; i++) {
-                md[i*4]   = (uint8_t)(c->state[i] >> 24);
-                md[i*4+1] = (uint8_t)(c->state[i] >> 16);
-                md[i*4+2] = (uint8_t)(c->state[i] >>  8);
-                md[i*4+3] = (uint8_t)(c->state[i]);
-            }
-            return 1;
-        }
-
-        unsigned char *SHA256(const unsigned char *d, size_t n, unsigned char *md) {
-            SHA256_CTX c;
-            static unsigned char m[SHA256_DIGEST_LENGTH];
-            if (md == NULL) md = m;
-            SHA256_Init(&c);
-            SHA256_Update(&c, d, n);
-            SHA256_Final(md, &c);
-            return md;
-        }
+        int SHA256_Init(SHA256_CTX *c){c->state[0]=0x6a09e667;c->state[1]=0xbb67ae85;c->state[2]=0x3c6ef372;c->state[3]=0xa54ff53a;c->state[4]=0x510e527f;c->state[5]=0x9b05688c;c->state[6]=0x1f83d9ab;c->state[7]=0x5be0cd19;c->count=0;return 1;}
+        int SHA256_Update(SHA256_CTX *c,const void *data,size_t len){const uint8_t*p=(const uint8_t*)data;size_t idx=(size_t)(c->count&63);c->count+=len;while(len>0){size_t n=64-idx;if(n>len)n=len;memcpy(c->buf+idx,p,n);idx+=n;p+=n;len-=n;if(idx==64){sha256_transform(c->state,c->buf);idx=0;}}return 1;}
+        int SHA256_Final(unsigned char *md,SHA256_CTX *c){uint64_t bits=c->count*8;size_t idx=(size_t)(c->count&63);uint8_t pad[72];pad[0]=0x80;size_t padlen=(idx<56)?(56-idx):(120-idx);memset(pad+1,0,padlen-1);SHA256_Update(c,pad,padlen);uint8_t lenbuf[8];for(int i=0;i<8;i++)lenbuf[i]=(uint8_t)(bits>>(56-8*i));SHA256_Update(c,lenbuf,8);for(int i=0;i<8;i++){md[i*4]=(uint8_t)(c->state[i]>>24);md[i*4+1]=(uint8_t)(c->state[i]>>16);md[i*4+2]=(uint8_t)(c->state[i]>>8);md[i*4+3]=(uint8_t)c->state[i];}return 1;}
+        unsigned char *SHA256(const unsigned char*d,size_t n,unsigned char*md){SHA256_CTX c;static unsigned char m[SHA256_DIGEST_LENGTH];if(md==NULL)md=m;SHA256_Init(&c);SHA256_Update(&c,d,n);SHA256_Final(md,&c);return md;}
         IMPL_EOF
 
         CMAKE_FILE="app/src/main/cpp/CMakeLists.txt"
         if [ ! -f "$CMAKE_FILE" ]; then
           CMAKE_FILE=$(find app/src/main -name CMakeLists.txt | head -n1)
         fi
-        echo "Patching CMake: $CMAKE_FILE"
         cat >> "$CMAKE_FILE" << 'CMAKE_EOF'
 
         # === Injected by CI: OpenSSL/SHA stub ===
         add_library(sha256_stub STATIC sha256_stub.c)
         target_include_directories(sha256_stub PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-        # Match plain signature used at line 30 of original CMakeLists.txt
         target_link_libraries(binary_analyzer sha256_stub)
         CMAKE_EOF
 
@@ -468,14 +375,6 @@ jobs:
 
     - name: Build Debug APK (armeabi-v7a only)
       run: |
-        echo "=== abiFilters ==="
-        grep -n "abiFilters" app/build.gradle.kts || echo "(none)"
-        echo "=== Compose Compiler ==="
-        grep -n "kotlinCompilerExtensionVersion" app/build.gradle.kts || echo "(none)"
-        echo "=== deps check ==="
-        grep -nE "material-icons-extended|lifecycle-runtime-compose" app/build.gradle.kts || echo "(none)"
-        echo "=== opt-in flags ==="
-        grep -n "opt-in" app/build.gradle.kts || echo "(none)"
         ./gradlew clean assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log || true
         echo ""
         echo "=== Kotlin compile errors (if any) ==="
@@ -495,9 +394,6 @@ jobs:
           unzip -l "$APK" | grep -q "lib/armeabi-v7a/" \
             && echo "✅ armeabi-v7a present" \
             || { echo "❌ armeabi-v7a MISSING"; exit 1; }
-          if unzip -l "$APK" | grep -q "lib/arm64-v8a/"; then
-            echo "⚠️ arm64-v8a still present!"
-          fi
         else
           echo "❌ APK not found!"
           exit 1
